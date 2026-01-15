@@ -1,0 +1,12 @@
+def huffman_encode(text):
+        frequencies = count_frequencies(text)
+        tree = build_huffman_tree(frequencies)
+        codes = generate_codes(tree)
+        return encode_text(text, codes)
+    
+    class Node:
+        def __init__(self, symbol, frequency):
+            self.symbol = symbol
+            self.frequency = frequency
+            self.left = None
+            self.right = None
