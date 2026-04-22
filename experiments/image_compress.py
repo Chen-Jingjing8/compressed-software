@@ -74,8 +74,18 @@ except Exception:
 from PIL import Image
 from collections import Counter
 
+# ---------------------------------------------------------------------
+# 阅读指引（仅增强注释，不改逻辑）
+# - 基础工具：位串转换、概率统计、熵与平均码长
+# - 核心流程：encode_image / decode_image
+# - 实验流程：auto_pipeline（批量压缩、解压、汇总、绘图）
+# - 展示层：plot_gray_figures / plot_rgb_figures
+# - 入口：build_cli / main
+# ---------------------------------------------------------------------
+
 
 # ============================ 基础工具 ============================
+# 将 '0'/'1' 位串打包为字节，返回 (字节数据, 末尾补零位数)。
 def bits_to_bytes(bits: str) -> Tuple[bytes, int]:
     """'0'/'1'字符串 -> 字节序列（返回 bytes 与 padding_bits 个数）"""
     padding = (8 - len(bits) % 8) % 8
@@ -87,11 +97,13 @@ def bits_to_bytes(bits: str) -> Tuple[bytes, int]:
     return bytes(out), padding
 
 
+# 将字节数据展开为位串，保留每个字节前导 0（固定 8 位）。
 def bytes_to_bits(data: bytes) -> str:
     """字节序列 -> '0'/'1'字符串（保留前导 0）"""
     return ''.join(f'{b:08b}' for b in data)
 
 
+# 统计频数与概率分布；若项目提供 utils 实现则优先复用。
 def freq_prob_from_iterable(seq: Iterable[int]) -> Tuple[Dict[int, int], Dict[int, float]]:
     """统计频率与概率分布；若项目提供 utils.get_frequency_distribution 则优先使用。"""
     if get_frequency_distribution is not None:
@@ -110,6 +122,7 @@ def freq_prob_from_iterable(seq: Iterable[int]) -> Tuple[Dict[int, int], Dict[in
     return dict(c), probs
 
 
+# 根据信号概率分布计算信息熵 H(X)。
 def entropy_from_probs(probs: Dict[int, float]) -> float:
     """H(X) = -sum p log2 p"""
     H = 0.0
@@ -119,16 +132,19 @@ def entropy_from_probs(probs: Dict[int, float]) -> float:
     return H
 
 
+# 计算平均码长 L_avg = sum p(x)*|code(x)|。
 def average_code_length(codes: Dict[int, str], probs: Dict[int, float]) -> float:
     """L_avg = sum_x p(x) * |code(x)|"""
     return sum(probs[sym] * len(codes[sym]) for sym in probs if sym in codes)
 
 
+# 对原始像素字节做 SHA-256，用于校验重建一致性。
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 # ============================ 编码器工厂 ============================
+# 根据 method 构造具体编码器实例（Huffman / Shannon / SFE）。
 def make_encoder(method: str, probs: Dict[int, float]):
     m = method.lower()
     if m == 'huffman':
@@ -142,6 +158,7 @@ def make_encoder(method: str, probs: Dict[int, float]):
 
 
 # ============================ 直方图导出 ============================
+# 导出单通道直方图：CSV（数值/计数/概率）+ PNG（若 matplotlib 可用）。
 def export_histogram(prefix: str, channel_name: str, values: List[int]) -> None:
     """
     导出某一通道的直方图到 CSV 与（若可用）PNG。
@@ -188,6 +205,11 @@ def export_histogram(prefix: str, channel_name: str, values: List[int]) -> None:
 
 
 # ============================ 核心：编码/解码 ============================
+# 压缩主流程：
+# 1) 读取图片并转为目标模式（L 或 RGB）
+# 2) 按通道统计概率并熵编码
+# 3) 写入 icomp-v2 容器（元数据 + 分段负载）
+# 4) 返回统计行，供批处理汇总和绘图
 def encode_image(input_path: str,
                  output_path: str,
                  method: str = 'huffman',
@@ -344,6 +366,7 @@ def encode_image(input_path: str,
     return row
 
 
+# 解压主流程：读取容器 -> 按码本逐通道解码 -> 重建并保存图片。
 def decode_image(input_path: str,
                  output_path: str) -> Image.Image:
     """读取容器 -> 解码 -> 返回 PIL 图像对象（并保存到 output_path）"""
@@ -414,6 +437,7 @@ def decode_image(input_path: str,
 
 
 # ============================ PSNR ============================
+# 计算 PSNR（8-bit），用于评估重建图与参考图差异。
 def compute_psnr(img_ref: Image.Image, img_test: Image.Image) -> float:
     """计算 L 或 RGB 图像的 PSNR（8-bit 量化）"""
     if img_ref.mode != img_test.mode:
@@ -439,6 +463,7 @@ def compute_psnr(img_ref: Image.Image, img_test: Image.Image) -> float:
     return 10.0 * math.log10((MAXI * MAXI) / mse)
 
 
+# 计算两个序列的均方误差 MSE（长度不一致时按较短长度）。
 def mse_list(a: List[int], b: List[int]) -> float:
     n = min(len(a), len(b))
     if n == 0:
@@ -451,6 +476,7 @@ def mse_list(a: List[int], b: List[int]) -> float:
 
 
 # ============================ 自动管线 ============================
+# 扫描目录中的常见图片格式并返回完整路径列表。
 def list_images(data_dir: str) -> List[str]:
     exts = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
     if not os.path.isdir(data_dir):
@@ -463,6 +489,10 @@ def list_images(data_dir: str) -> List[str]:
     return files
 
 
+# 批处理入口：
+# - 每张图分别做 L 与 RGB 两种模式
+# - 每种模式跑 huffman / shannon / sfe
+# - 输出压缩文件、重建图、直方图、统计表与对比图
 def auto_pipeline(data_dir: str = 'data/images') -> None:
     """
     全自动批处理：扫描 data/images/，对每张图在 L 与 RGB 模式下用三种编码方法压缩、解压、统计与绘图。
@@ -579,6 +609,7 @@ def auto_pipeline(data_dir: str = 'data/images') -> None:
 
 
 # ============================ 绘图（参考组员风格） ============================
+# 将结果按 image 分组，便于同图不同方法横向比较。
 def _group_by_image(rows: List[Dict[str, float]]):
     """将 rows 按 image 分组，返回 {image: {method: row}}"""
     by_img: Dict[str, Dict[str, Dict[str, float]]] = {}
@@ -588,6 +619,7 @@ def _group_by_image(rows: List[Dict[str, float]]):
     return by_img
 
 
+# 绘制灰度模式结果：熵 vs 平均码长、压缩率。
 def plot_gray_figures(rows_gray: List[Dict[str, float]], fig_dir: str) -> None:
     if not rows_gray:
         return
@@ -636,6 +668,7 @@ def plot_gray_figures(rows_gray: List[Dict[str, float]], fig_dir: str) -> None:
     print(f"[图] {path}")
 
 
+# 绘制 RGB 模式结果：总量对比、压缩率、R/G/B 通道分图对比。
 def plot_rgb_figures(rows_rgb: List[Dict[str, float]], fig_dir: str) -> None:
     if not rows_rgb:
         return
@@ -705,6 +738,7 @@ def plot_rgb_figures(rows_rgb: List[Dict[str, float]], fig_dir: str) -> None:
 
 
 # ============================ CLI & 入口 ============================
+# 构建命令行接口：encode / decode / auto。
 def build_cli() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="图片压缩工具（L / RGB；三通道分别熵编码；直方图导出；PSNR 校验；自动批处理）")
@@ -735,6 +769,7 @@ def build_cli() -> argparse.ArgumentParser:
     return parser
 
 
+# 程序入口：无参数执行自动批处理；有参数按子命令执行。
 def main(argv: Optional[List[str]] = None) -> None:
     # 若无参数，直接运行自动管线
     if argv is None:
